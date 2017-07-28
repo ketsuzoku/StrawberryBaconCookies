@@ -1,27 +1,29 @@
 #TODO: Add additional commands
 #TODO: Add a cooldown timer for each command separately
-#TODO: Enable per-channel logging
 #TODO: Add code to handle alternate events
 #TODO: Role Checking
+#TODO: Permit Command
+
+#Temporary
+sys.path.append('C:\\Discord Bot')
 
 import discord
+from discord.ext.commands import Bot
 import re
 import aiofiles
 import asyncio
 import os
-from discord.ext.commands import Bot
+import sys
+from imp import reload
+import config as cfg
+
+
 
 Butt = Bot(command_prefix="!")
-Filter_file = "C:\\Discord Bot\\filters.txt"
-Whitelist_file = "C:\\Discord Bot\\whitelists.txt"
-Root_Dir = "C:\\Discord Bot\\"
 
-# TODO: Get these dynamically?
-# Links to things that are relevant to the event.
-Schedlink = "https://gamesdonequick.com/schedule"
-Trackerlink = "https://gamesdonequick.com/tracker/21"
-# Current event.
-Event = "AGDQ 2018"
+# These things are extremely unlikely to change while the bot is active
+OAuthToken = cfg.OAuthToken
+
 
 # List of Badword Regex Filters, populated on startup and after the get_filters() method is called
 filters = []
@@ -29,20 +31,27 @@ filters = []
 # List of Whitelisted URLs in Regex format, populated on startup and after the get_whitelists() method is called
 whitelists = []
 
-# URL Regex Matcher
-urlregexmatch = "https?:\/\/[^\s]+\.[^\s]+|www\.[^\s]+\.[^\s]+"
+# List of users permitted to post a URL.
+permitted = []
 
-#FilterURL = ""
-#ChatRules = "Empty"
+# These variables are filled from the config file
+Filter_file = ""
+Whitelist_file = ""
+
+
 
 # Timers?
-Scheduletimer = 300000
-Trackertimer = 300000
+Commandtimer = ""
 
 
-# GDQ Server stuff
-#mod_roles = ['Administrators','gdq-attendee-bot','gdqstaff','headmods','partners','chatmods','restreamers']
+# TODO: Store Roles Properly?
 mod_roles = ['Administrator','Moderator','Lead Moderator']
+
+# Instead of saving the variables in the code, grab them from a config file instead.
+# This is a method in case we need to update the settings while the bot is active
+def get_config():
+	reload(cfg)
+	return
 
 # Utility commands
 
@@ -56,15 +65,15 @@ async def examine_message_for_badwords(message)	:
 	action = 0
 	
 	# Check if the content matches the url regex filter
-	url = re.search(urlregexmatch,Content,flags=re.I)
+	url = re.search(cfg.urlregexmatch,Content,flags=re.I)
 	
 	# If yes...
-	if url:
+	if url and str(message.author) not in permitted:
 		print("Message contains a URL.")
 		NewWords = []
 		# Loop through the list of whitespace separated strings
 		for x in Words:
-			match = re.search(urlregexmatch,x,flags=re.I)
+			match = re.search(cfg.urlregexmatch,x,flags=re.I)
 			if match:
 				NewWords.append(x)
 			await asyncio.sleep(0.001)
@@ -97,16 +106,7 @@ async def examine_message_for_badwords(message)	:
 	# If a hit, we need to purge it.
 	# ID returns the ID of the regex filter that triggered the action
 	# Actions: 1 = Purge, 2 = Kick, 3 = Ban, 0 = Do Nothing
-		
-# Check if line starts with ! and consists of one word
-async def is_command(message):
-	Content = str(message.content)
-	List = [Content.split(' ')]
-	if message.content.startswith('!') and len(List) == 1:
-		return True
-	else:
-		return False
-		
+
 # Check if the author of the message has one of the moderator roles
 def is_mod(message):
 	for role in message.author.roles:
@@ -119,21 +119,23 @@ def is_permitted(message):
 		return True
 	return False
 		
+
+
+
+	
 #TODO Make filters write from URL to file later
-
-
 async def get_filters(File):
 	filters = []
 	async with aiofiles.open(File,'r') as f:
 		async for line in f:
-			filters.append(line)
+			filters.append(line.strip())
 	return
 
 async def get_whitelists(File):
 	whitelists = []
 	async with aiofiles.open(File,'r') as f:
 		async for line in f:
-			whitelists.append(line)
+			whitelists.append(line.strip())
 	return
 	
 async def add_whitelist(File,filter):
@@ -144,12 +146,12 @@ async def add_whitelist(File,filter):
 
 async def add_filter(File,filter):
 	async with aiofiles.open(File,'a') as f:
-		await f.write('filter')
+		await f.write(filter+"\n")
 	await get_filters(File)
 	return
 
 async def log_message(message):
-	File = Root_Dir+str(message.server)+"\\"+str(message.channel)+".log"
+	File = cfg.Root_Dir+str(message.server)+"\\"+str(message.channel)+".log"
 	async with aiofiles.open(File,'a') as f:
 		await f.write("("+str(message.timestamp)+") ["+str(message.author)+"] "+str(message.content)+"\n")
 	return
@@ -161,8 +163,8 @@ async def on_ready():
 	print("Client logged in.")
 	print("Name: "+Butt.user.name)
 	print("ID: "+Butt.user.id)
-	await get_filters(Filter_file)
-	await get_whitelists(Whitelist_file)
+	await get_filters(cfg.Root_Dir+cfg.Filter_file)
+	await get_whitelists(cfg.Root_Dir+cfg.Whitelist_file)
 	return
 
 # Discord Server Events
@@ -183,20 +185,14 @@ async def on_message(message):
 	if (message.channel == LogChannel):
 		return
 	
-	# Terminal Logging
-	print(Channel + ": "+Content+"\" by user "+Author+" at "+Timestamp)
-	
 	# We don't want to treat the bot messages as commands
 	if (Author == Butt.user):
 		return
 		
-
-	print("Server: "+str(message.server))
-	print("Channel: "+str(message.channel))
-	print("Log file: "+Root_Dir+str(message.server)+"\\"+str(message.channel)+".log")
 	await log_message(message)
 	
 	# Check message for naughty things
+	# TODO: Implement Scaling Punishments for repeat infractions
 	mod = is_mod(message)
 	if not mod:
 		Badwordcheck = await examine_message_for_badwords(message)
@@ -220,25 +216,37 @@ async def on_message(message):
 			return
 	
 
-	#Probably separate handling for commands to non-commands?
-	command = await is_command(message)
-	if command:
-		if message.content.startswith("!schedule"):
-			await Butt.send_message(message.channel, "The "+Event+" schedule is available at "+Schedlink)
-			await Butt.send_message(LogChannel,"!schedule command triggered by "+Author+" at "+Timestamp+" .")
-		elif message.content.startswith("!tracker"):
-			await Butt.send_message(message.channel, "The "+Event+" tracker is available at "+Trackerlink)
-			await Butt.send_message(LogChannel,"!tracker command triggered by "+Author+" at "+Timestamp+" .")
-		elif message.content.startswith("!exit") and mod:
-			await Butt.send_message(message.channel, "Sadface.")
-			await Butt.send_message(LogChannel,"!exit command triggered by "+Author+" at "+Timestamp+" .")
-			print("Exit command given by user: "+Author)
-			return await Butt.close()
-		elif message.content.startswith("!updatefilters") and mod:
-			await get_filters(Filter_file)
-			await Butt.send_message(LogChannel,"!updatefilters command triggered by "+Author+" at "+Timestamp+" .")
+	# Command Block
+	if message.content.startswith("!schedule"):
+		await Butt.send_message(message.channel, "The "+cfg.Event+" schedule is available at "+cfg.Schedlink)
+		await Butt.send_message(LogChannel,"!schedule command triggered by "+Author+" at "+Timestamp+".")
+	elif message.content.startswith("!tracker"):
+		await Butt.send_message(message.channel, "The "+cfg.Event+" tracker is available at "+cfg.Trackerlink)
+		await Butt.send_message(LogChannel,"!tracker command triggered by "+Author+" at "+Timestamp+".")
+	elif message.content.startswith("!exit") and mod:
+		await Butt.send_message(message.channel, "Sadface.")
+		await Butt.send_message(LogChannel,"!exit command triggered by "+Author+" at "+Timestamp+".")
+		print("Exit command given by user: "+Author)
+		return await Butt.close()
+	elif message.content.startswith("!updatefilters") and mod:
+		await get_filters(cfg.Filter_file)
+		await Butt.send_message(LogChannel,"!updatefilters command triggered by "+Author+" at "+Timestamp+".")
+	#elif message.content.startswith("!permit") and mod:
+		# TODO: Check to see if you can grab a person's name from a message without converting to string
+		#if Words[1] in :
+	elif message.content.startswith("!reload") and mod:
+		await Butt.send_message(LogChannel,"!reload command triggered by "+Author+" at "+Timestamp+".")
+		try:
+			get_config()
+		except:
+			e = sys.exc_info()
+			print("Reload failed: "+str(e))
+		finally:
+			print("Reload successful.")
+			
+		
 		
 	return
 	
-# OAuth Token, PROTECT
-Butt.run("MzM5ODEwNzA0MTE2Njc4NjU3.DFpY6A.8iEFTjwR3-skcaRXvbqB7Z-nIeU")
+# OAuth Token
+Butt.run(OAuthToken)
