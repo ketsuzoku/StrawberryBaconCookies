@@ -4,9 +4,6 @@
 #TODO: Role Checking
 #TODO: Permit Command
 
-#Temporary
-sys.path.append('C:\\Discord Bot')
-
 import discord
 from discord.ext.commands import Bot
 import re
@@ -14,19 +11,22 @@ import aiofiles
 import asyncio
 import os
 import sys
+
+#Temporary
+sys.path.append('C:\\Discord Bot')
+
 from imp import reload
 import config as cfg
-
-
 
 Butt = Bot(command_prefix="!")
 
 # These things are extremely unlikely to change while the bot is active
 OAuthToken = cfg.OAuthToken
-
+TimeOfLastToken = ""
 
 # List of Badword Regex Filters, populated on startup and after the get_filters() method is called
 filters = []
+immediateban = []
 
 # List of Whitelisted URLs in Regex format, populated on startup and after the get_whitelists() method is called
 whitelists = []
@@ -34,16 +34,7 @@ whitelists = []
 # List of users permitted to post a URL.
 permitted = []
 
-# These variables are filled from the config file
-Filter_file = ""
-Whitelist_file = ""
-
-
-
-# Timers?
-Commandtimer = ""
-
-
+enabled = False
 # TODO: Store Roles Properly?
 mod_roles = ['Administrator','Moderator','Lead Moderator']
 
@@ -52,7 +43,7 @@ mod_roles = ['Administrator','Moderator','Lead Moderator']
 def get_config():
 	reload(cfg)
 	return
-
+	
 # Utility commands
 
 # Check each incoming message for urls, if a match, purge the message
@@ -113,41 +104,38 @@ def is_mod(message):
 		if role.name in mod_roles:
 			return True
 	return False
-	
+
+# TODO: Implement this properly
 def is_permitted(message):
 	if message.author.name in permitted:
 		return True
 	return False
-		
-
-
-
 	
-#TODO Make filters write from URL to file later
-async def get_filters(File):
-	filters = []
-	async with aiofiles.open(File,'r') as f:
-		async for line in f:
-			filters.append(line.strip())
-	return
-
-async def get_whitelists(File):
-	whitelists = []
-	async with aiofiles.open(File,'r') as f:
-		async for line in f:
-			whitelists.append(line.strip())
+# TODO: Get these from Firebase instead
+async def get_filters():
+	global filters
+	# Get new user token, since they expire hourly.
+	cfg.refresh()
+	# Get Filters from DB
+	filters = cfg.db.child("badwords").get(cfg.user['idToken']).val()
+	# Check to remove None entries in case numbering is not maintained properly
+	filters = [x for x in filters if x != None]
 	return
 	
-async def add_whitelist(File,filter):
-	async with aiofiles.open(File,'a') as f:
-		await f.write(filter+"\n")
-	await get_whitelists(File)
+async def get_banwords():
+	global immediateban
+	cfg.refresh()
+	banlist = cfg.db.child("immediateban").get(cfg.user['idToken']).val()
+	banlist = [x for x in banlist if x != None]
+	immediateban = banlist
 	return
-
-async def add_filter(File,filter):
-	async with aiofiles.open(File,'a') as f:
-		await f.write(filter+"\n")
-	await get_filters(File)
+	
+async def get_whitelists():
+	global whitelists
+	cfg.refresh()	
+	whitelist = cfg.db.child("whitelist").get(cfg.user['idToken']).val()
+	whitelist = [x for x in whitelist if x != None]
+	whitelists = whitelist
 	return
 
 async def log_message(message):
@@ -158,30 +146,43 @@ async def log_message(message):
 	
 # Startup Event
 
+async def bot_enable():
+	global enabled
+	await get_filters()
+	await get_banwords()
+	await get_whitelists()
+	enabled = True
+	return
+
 @Butt.event
 async def on_ready():
 	print("Client logged in.")
 	print("Name: "+Butt.user.name)
 	print("ID: "+Butt.user.id)
-	await get_filters(cfg.Root_Dir+cfg.Filter_file)
-	await get_whitelists(cfg.Root_Dir+cfg.Whitelist_file)
 	return
-
+	
 # Discord Server Events
 @Butt.event
 async def on_message(message):
-	#Convert some objects to string so we can examine them later
+	global filters,whitelists,immediateban
+	mod = is_mod(message)
 	Content = str(message.content)
 	Author = str(message.author)
 	Timestamp = str(message.timestamp)
 	Channel = str(message.channel)
-	
-	# Clean this up later for multi-server shit
 	LogChannel = discord.utils.get(Butt.get_all_channels(), name='bot-log-channel')
-	#FilteredChannels = [discord.utils.get(Butt.get_all_channels(), name='general'),discord.utils.get(Butt.get_all_channels(), name='Voicechat'),discord.utils.get(Butt.get_all_channels(), name='Chillzone')]
+	await log_message(message)
+	# We don't want to treat the bot messages as commands
+	if (Author == Butt.user):
+		return
 	
-	#log_message(message)
-	# We don't want to report on messages in the log channel; infinite loops are bad
+	#FilteredChannels = [discord.utils.get(Butt.get_all_channels(), name='general'),discord.utils.get(Butt.get_all_channels(), name='Voicechat'),discord.utils.get(Butt.get_all_channels(), name='Chillzone')]
+	if not enabled:
+		if message.content.startswith("!enable") and mod:
+			await bot_enable()
+			await Butt.send_message(LogChannel,"!enable command triggered by "+Author+" at "+Timestamp+".")
+		return
+	
 	if (message.channel == LogChannel):
 		return
 	
@@ -189,11 +190,9 @@ async def on_message(message):
 	if (Author == Butt.user):
 		return
 		
-	await log_message(message)
-	
 	# Check message for naughty things
 	# TODO: Implement Scaling Punishments for repeat infractions
-	mod = is_mod(message)
+	
 	if not mod:
 		Badwordcheck = await examine_message_for_badwords(message)
 		if Badwordcheck[0] != 0:
@@ -214,7 +213,6 @@ async def on_message(message):
 
 			await Butt.send_message(LogChannel,"User "+Author+" triggered badwords filter \#" + Badwordcheck + ". Message: \""+Content+"\". Action taken: "+Badwordcheck[1]+".")
 			return
-	
 
 	# Command Block
 	if message.content.startswith("!schedule"):
@@ -229,7 +227,8 @@ async def on_message(message):
 		print("Exit command given by user: "+Author)
 		return await Butt.close()
 	elif message.content.startswith("!updatefilters") and mod:
-		await get_filters(cfg.Filter_file)
+		await get_filters()
+		await get_banwords()
 		await Butt.send_message(LogChannel,"!updatefilters command triggered by "+Author+" at "+Timestamp+".")
 	#elif message.content.startswith("!permit") and mod:
 		# TODO: Check to see if you can grab a person's name from a message without converting to string
@@ -242,9 +241,7 @@ async def on_message(message):
 			e = sys.exc_info()
 			print("Reload failed: "+str(e))
 		finally:
-			print("Reload successful.")
-			
-		
+			print("Reload successful.")	
 		
 	return
 	
